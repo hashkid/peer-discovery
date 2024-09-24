@@ -1,0 +1,10 @@
+[package]
+name = "peer_discover"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+libp2p = {version = "0.54.1", features = [ "tokio", "gossipsub", "identify", "mdns", "noise", "kad", "macros", "tcp", "yamux", "quic", "cbor"] }
+tokio = { version = "1.39.3", features = ["full"] }
+tracing = "0.1.40"
