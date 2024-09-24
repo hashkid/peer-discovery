@@ -26,7 +26,7 @@ async fn main() {
         }
     }).expect("failed build swarm").build();
 
-    let addr = "/ip4/0.0.0.0/tcp/1234".parse().expect("invalid addr");
+    let addr = "/ip4/0.0.0.0/tcp/0".parse().expect("invalid addr");
     swarm.listen_on(addr).expect("failed to listen on all interfaces");
 
     loop {
