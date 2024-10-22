@@ -1,6 +1,6 @@
-use std::{str::FromStr, time::Duration};
+use std::{env::args, num::NonZeroUsize, str::FromStr, time::Duration};
 
-use libp2p::{futures::StreamExt, identify, kad::{store::MemoryStore, Record, RecordKey}, noise, swarm::{NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
+use libp2p::{futures::StreamExt, identify, identity::Keypair, kad::{store::MemoryStore, GetRecordOk, Record, RecordKey}, noise, swarm::{NetworkBehaviour, SwarmEvent}, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use tokio::select;
 use std::env;
 
@@ -15,8 +15,12 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     println!("start {:?}", args);
 
-    let mut swarm = SwarmBuilder::with_new_identity()
-        .with_tokio()
+    let mut swarm = if args.len() >= 2 {
+            SwarmBuilder::with_new_identity()
+        } else {
+            let keypair = Keypair::ed25519_from_bytes([1; 32]).expect("error key");
+            SwarmBuilder::with_existing_identity(keypair)
+        }.with_tokio()
         // .with_quic()
         .with_tcp(
             tcp::Config::default(),
@@ -35,7 +39,8 @@ async fn main() {
         .with_swarm_config(|c| {c.with_idle_connection_timeout(Duration::from_secs(300))})
         .build();
 
-    let addr = "/ip4/127.0.0.1/tcp/0".parse().expect("invalid addr");
+    let port = if args.len() > 1 { 0 } else {3232};
+    let addr = format!("/ip4/127.0.0.1/tcp/{port}").parse().expect("invalid addr");
     swarm.listen_on(addr).expect("failed to listen on all interfaces");
 
     if let Some(boot) = args.get(1) {
@@ -43,7 +48,12 @@ async fn main() {
     }
     let mut interval = tokio::time::interval(Duration::from_secs(10));
 
-    let _ = swarm.behaviour_mut().kad.put_record(Record::new([1].to_vec(), vec![0]), libp2p::kad::Quorum::All);
+    // let _ = swarm.behaviour_mut().kad.put_record(Record::new([1].to_vec(), vec![0]), libp2p::kad::Quorum::All);
+    if args.len() < 2 {
+        swarm.behaviour_mut().kad.set_mode(Some(libp2p::kad::Mode::Server));
+    }
+
+    let to_search = PeerId::random();
 
     loop {
         select! {
@@ -53,13 +63,43 @@ async fn main() {
                 },
                 SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
                     info.listen_addrs.iter().for_each(|addr| {
-                        println!("Discovered new address: {peer_id} {addr}");
+                        println!("Discovered new address: {addr}/p2p/{peer_id} ");
                         swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
                     });
+                    println!("remote {:?}", info.observed_addr);
                     let _ = swarm.behaviour_mut().kad.bootstrap();
                 },
-                SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kad(e)) => {
-                    println!("Kad events: {:?}", e);
+                SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kad(libp2p::kad::Event::RoutingUpdated { 
+                    peer, is_new_peer, addresses, ..
+                })) => {
+                    println!("KAD added {:?}", peer);
+                    if is_new_peer {
+                        let addr = addresses.first().clone();
+                        swarm.behaviour_mut().kad.add_address(&peer, addr);
+                    }
+                },
+                SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Kad(libp2p::kad::Event::OutboundQueryProgressed { 
+                    result,
+                    ..
+                 })) => {
+                    match result {
+                        libp2p::kad::QueryResult::GetClosestPeers(qr) => {
+                            match qr {
+                                Ok(peer) => {
+                                    if peer.peers.len() > 0 {
+                                        println!("Kad events: {:?}", peer.peers);
+                                    }
+                                },
+                                Err(e) => {
+                                    println!("Error {}", e)
+                                }
+                            }
+                        }
+                        _ => {
+                            println!("events: {:?}", result)
+                        }
+                    }
+                    
                 },
                 SwarmEvent::ConnectionEstablished { peer_id, num_established, endpoint, ..} => {
                     let connected = swarm.connected_peers().map(|p| p.clone()).collect::<Vec<_>>();
@@ -76,14 +116,15 @@ async fn main() {
                 },
             },
             _ = interval.tick() => {
+
+                // put(&mut swarm);
                 println!("Connected peers: {:?}", swarm.connected_peers().map(|p| p.clone()).collect::<Vec<_>>());
-                // let peer_id = swarm.local_peer_id().clone();
-                let q = swarm.behaviour_mut().kad.get_closest_peers([1].to_vec());
-                println!("Query Id: {}", q);
+                // swarm.behaviour_mut().kad.
+                
+                // discover(&mut swarm, to_search);
             }
         }
     }
-
 }
 
 fn dail_bootstrap_nodes(swarm: &mut Swarm<DiscoveryBehaviour>, bootstrap_nodes: &String) {
@@ -104,4 +145,22 @@ fn dail_bootstrap_nodes(swarm: &mut Swarm<DiscoveryBehaviour>, bootstrap_nodes: 
             }
         }
     }
+}
+
+fn discover(swarm: &mut Swarm<DiscoveryBehaviour>, to_search: PeerId) {
+
+    // let to_search: PeerId = PeerId::random();
+    println!("Searching for the closest peers to {:?}", to_search);
+    swarm.behaviour_mut().kad.get_closest_peers(to_search);
+    let _ = swarm.behaviour_mut().kad.bootstrap();
+}
+
+fn put(swarm: &mut Swarm<DiscoveryBehaviour>) {
+
+    let pk_record = libp2p::kad::Record::new(swarm.local_peer_id().to_bytes(), [1].to_vec());
+
+    swarm
+    .behaviour_mut()
+    .kad.put_record(pk_record, libp2p::kad::Quorum::N(NonZeroUsize::new(2).unwrap()))
+    .expect("failed to pub");
 }
